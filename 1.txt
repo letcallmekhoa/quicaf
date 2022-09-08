@@ -1,1 +1,8 @@
 fghfghffghffghfdfgfddffdssdfdfsdsddsfggdfdsdsdfdfgdfgd
+
+import "abc"
+
+def sdd():
+  print "sdf"
+  if True:
+    print "2345"
