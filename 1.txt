@@ -8,8 +8,6 @@ import os
 import json
 import fnmatch
 
-__VERSION__ = 7
-
 session = requests.Session()
 session.trust_env = False
 headers = {'Content-Type': 'application/x-www-form-urlencoded','User-Agent': 'Mozilla/5.0 ( compatible )'}
