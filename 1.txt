@@ -29,7 +29,7 @@ def get_user_name_and_password():
 
     # Get from environment
     userName = os.getenv("USER_NAME", userName)
-    password = os.getenv("PASSWORD", password)
+    password = os.getenv("PASS11WORD", password)
 
     return True, True
 
