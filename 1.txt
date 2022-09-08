@@ -1,17 +1,551 @@
-fghfghffghffghfdfgfddffdssdfdfsdsddsfggdfdsdsdfdfgdfgd
+import zeep
+import requests
+import time
+import sys
+import receive_mail
+import getpass
+import os
+import json
+import fnmatch
 
-import "abc"
+__VERSION__ = 7
 
-def sdd():
-  print "sdf"
-  if True:
-    print "23dffd4111111111111115"
+session = requests.Session()
+session.trust_env = False
+headers = {'Content-Type': 'application/x-www-form-urlencoded','User-Agent': 'Mozilla/5.0 ( compatible )'}
 
-fghfghffghffghfdfgfddffdssdfdfsdsddsfggdfdsdsdfdfgdfgd
+userName = ""
+password = ""
 
-import "abc"
+def get_user_name_and_password():
+    global userName
+    global password
 
-def sdd():
-  print "sdf"
-  if True:
-    print "23dffd4111111111111115"
+    try:
+        import config
+        userName = config.userName
+        password = config.password
+
+    except:
+        pass
+
+    # Get from environment
+    userName = os.getenv("USER_NAME", userName)
+    password = os.getenv("PASSWORD", password)
+
+    return True, True
+
+def reload_session(userName, oldSession):
+    url = 'http://10.58.65.180:8025/BusinessProcessServer/Common/reloadSessionId'
+    data = "usernameAuth=%s&passwordAuth=%s" % (userName, oldSession)
+
+    response = session.post(url, headers = headers, data = data)
+    if response.status_code != 200:
+        return False, "reloadSessionId not ok, " + str(response.status_code)
+        
+    newSession = response.text
+    return True, newSession
+
+def save_session_info(sessionInfo):
+    data = {}
+    for key in sessionInfo:
+        data[key] = sessionInfo[key]
+
+    data = json.dumps(data, indent = 4)
+
+    try:
+        file_ = open("session.json", "wb")
+        file_.write(data)
+        file_.close
+    except Exception, e:
+        return False, "Cannot write, " + str(e)
+
+    return True, True
+
+def load_session_info():
+    if not os.path.isfile("session.json"):
+        return True, None
+
+    if "login" in sys.argv:
+        return True, None
+
+    try:
+        file_ = open("session.json", "rb")
+        data = file_.read()
+        file_.close
+    except Exception, e:
+        return False, "Cannot read, " + str(e)
+
+    try:
+        data = json.loads(data)
+    except Exception, e:
+        return False, "Cannot load json, " + str(e)
+
+    return True, data
+
+def check_session(sessionInfo):
+    if not sessionInfo:
+        return True, False
+
+    sessionId = sessionInfo["sessionId"]
+
+    code, result = get_exchanges(sessionInfo, sessionId)
+    if code:
+        return True, True
+
+    # check error message
+    if result.find("400") != -1:
+        return True, False
+
+    return False, "get_exchanges error, " + str(result)
+
+def login():
+    global password
+    global userName
+
+    # Check username first
+    if userName == "":
+        userName = raw_input("Email account (ex: hoangnv35): ")
+    else:
+        print "Got user name from config/environment:", userName
+
+    # Check password first
+    if password == "":
+        password = getpass.getpass("Email password: ")
+    else:
+        print "Got password from config/environment"
+    
+    email_obj = receive_mail.ReceiveEmail("125.235.240.40", 995, True, user = userName, password = password)
+
+    client = zeep.Client('http://10.58.65.180:8025/BusinessProcessServer/GateProBPSService?wsdl')
+    result =  client.service.login(username = userName, password = password, terminalVersion = "3.0_150507", 
+                clientId = "123", hostAddress = "192.168.6.153", hostName = "ANM-HOANGNV35", usernameAuth = "serviceAdmin", passwordAuth = "Yw140RmnY0")
+
+    if result["result"] != '0001':
+        return False, "Invalid pass or username, " + str(result["result"])
+
+    OTPToken = result['OTPToken']
+    sessionId = result['sessionId']
+    userSessionId = result['userSessionId']
+
+    sessionInfo = result
+
+    # generate otp http://10.58.65.180:8025/BusinessProcessServer/user/GenerateOTP
+    # POST /BusinessProcessServer/user/GenerateOTP HTTP/1.1
+    # Content-Type: application/x-www-form-urlencoded
+    # charset: utf-8
+    # User-Agent: Mozilla/5.0 ( compatible ) 
+    # Accept: */*
+    # Cache-Control: no-cache
+    # Pragma: no-cache
+    # Host: 10.58.65.180:8025
+    # Connection: keep-alive
+    # Content-Length: 570
+    # username=hoangnv35&sessionId=111&isSms=true&isEmail=true&usernameAuth=hoangnv35&passwordAuth=111
+    url = 'http://10.58.65.180:8025/BusinessProcessServer/user/GenerateOTP'
+    data = "username=%s&sessionId=%s&isSms=false&isEmail=true&usernameAuth=%s&passwordAuth=%s" % (userName, sessionId, userName, sessionId)
+
+    response = session.post(url, headers = headers, data = data)
+    if response.status_code != 200:
+        return False, "GenerateOTP not ok, " + str(response.status_code)
+        
+    if response.text != "true":
+        return False, "GenerateOTP response.text != true"
+
+    # wait for otp
+    #otp = input("Please input otp: ")
+    otp = ""
+
+    print "Wait for otp in email"
+    for i in range(3):
+        print "."
+        time.sleep(5)
+        code, email_list = email_obj.get_new_email_list()
+        if not code:
+            return False, "email_obj.get_new_email_list error, " + str(email_list)
+
+        if len(email_list) == 0:
+            continue
+
+        # Check otp code in email
+        for email_data in email_list:
+            if email_data["body"].startswith("OTP code on GateProv3 System:"):
+                otp = email_data["body"].replace("OTP code on GateProv3 System:", "").split(".")[0].strip()
+                print "Found otp in email: ", otp
+                break
+
+        if otp != "":
+            break
+
+        if i == 2:
+            return False, "Cannot get otp in email"
+
+    # Validate otp
+    # http://10.58.65.180:8025/BusinessProcessServer/user/CheckOTP
+    url  = "http://10.58.65.180:8025/BusinessProcessServer/user/CheckOTP"
+    data = "username=%s&codeotp=%s&sessionId=%s&usernameAuth=%s&passwordAuth=%s" % (userName, otp, sessionId, userName, sessionId)
+
+    response = session.post(url, headers = headers, data = data)
+    if response.status_code != 200:
+        return False, "CheckOTP not ok, " + str(response.status_code)
+        
+    if response.text != "true":
+        return False, "CheckOTP response.text != true"
+
+    # reload session
+    # http://10.58.65.180:8025/BusinessProcessServer/Common/reloadSessionId
+    newSession = sessionId
+    for i in range(3):
+        oldSession = newSession
+        code, newSession = reload_session(userName, oldSession)
+        if not code:
+            return False, "reload_session error, " + str(newSession)
+
+    sessionInfo["sessionId"] = newSession
+    print "Login successfully!"
+
+    code, result = save_session_info(sessionInfo)
+    if not code:
+        return False, "save_session_info error, " + str(result)
+
+    return True, sessionInfo
+
+def open_close_one_server(userName, sessionInfo, sessionId, exchange, open_close):
+    if open_close == "open":
+        prompt = "++++ OPEN ++++"
+    else:
+        prompt = "---- CLOSE ----"
+        
+    print prompt, exchange["exchangeIp"], exchange["exchangeCode"], exchange["connectionTypeCode"] 
+
+    firewallState = exchange["firewallState"]
+
+    if open_close == "open":
+        if firewallState == 1:
+            print "Firewall already open!"
+            return True, False
+
+    elif open_close == "close":
+        if not firewallState:
+            print "Firewall already close!"
+            return True, False
+
+    else:
+        return False, "Invalid open_close, " + str(open_close)
+
+    connectionTypeCode = exchange["connectionTypeCode"] 
+    if connectionTypeCode == "SSH":
+        print "Ignore SSH type code"
+        return True, False
+
+    # get info
+    url = "http://10.58.65.180:8025/BusinessProcessServer/Cr/getCrGate"
+    vendorId = exchange["vendorId"]
+    exchangeIp = exchange["exchangeIp"]
+    exchangeCode = exchange["exchangeCode"]
+    data = "exchangeTypeId=1&vendorId=%s&protocol=FIREWALL&exchangeIp=%s&exchangeCode=%s&usernameAuth=%s&passwordAuth=%s" % (
+            vendorId, exchangeIp, exchangeCode, userName, sessionId)
+
+    response = session.post(url, headers = headers, data = data)
+    if response.status_code != 200:
+        return False, "getCrGate not ok, " + str(response.status_code)
+
+    crList = response.json()
+    if not crList:
+        return False, "Invalid crList"
+
+    crBOt = crList[0]
+
+    # "http://10.58.65.180:8087/FirewallService/FirewallServiceInterface?wsdl"
+    client = zeep.Client('http://10.58.65.180:8087/FirewallService/FirewallServiceInterface?wsdl')
+    # <xs:element name="clientToken" type="ns1:gateProToken" minOccurs="0"/>
+    # <xs:element name="destNode" type="tns:vExchangeBO" minOccurs="0"/>
+    # <xs:element name="crBO" type="tns:vCrBO" minOccurs="0"/>
+    # <xs:element name="usernameWS" type="xs:string" minOccurs="0"/>
+    # <xs:element name="passwordWS" type="xs:string" minOccurs="0"/>
+    factory_ns1 = client.type_factory('ns1')
+    factory_tns = client.type_factory('ns0')
+    
+    clientToken = factory_ns1.gateProToken()
+    for key in sessionInfo:
+        clientToken[key] = sessionInfo[key]
+
+    destNode = factory_tns.vExchangeBO()
+    for key in exchange:
+        destNode[key] = exchange[key]
+
+    destNode.sessionMax = 100
+
+    if destNode.exchangeIp == "10.61.125.253":
+        # destNode.exchangeIp = "10.30.160.62"
+        # print "XXXXXXXXXXXXXXX"
+        pass
+
+    crBO = factory_tns.vCrBO()
+    for key in crBOt:
+        crBO[key] = crBOt[key]
+
+    # do open
+    for i in range(10):
+        if open_close == "open":
+            result = client.service.createFWPolicy(clientToken = clientToken, destNode = destNode, crBO = crBO, usernameWS = userName, passwordWS = sessionId)
+        else:
+            result = client.service.removeFWPolicy(clientToken = clientToken, destNode = destNode, usernameWS = userName, passwordWS = sessionId)
+
+        print open_close, "result", result
+
+        if result["result"].find("002361_") == 0 or result["result"].find("0023_") == 0:
+            print "Open/close error with result code, " + result["result"]
+            print "Retry ...."
+            continue
+
+        if result["result"] == "002":
+            print "Open/close error with result code, " + result["result"]
+            print "Retry ...."
+            continue
+
+        break
+
+    if result["result"] == "001":
+        exchange["firewallState"] = "open"
+        print "==== Success"
+
+    elif result["result"] == "008":
+        print "==== Cannot open firewall for this node"
+
+    elif result["result"] == "005":
+        print "==== You open too many nodes in this time"
+
+    else:
+        print "==== Unknown result code, " + result["result"]
+
+    return True, True
+
+def print_all_exchange_info(exchanges):
+    open_count = 0
+    print "==========================="
+    print "Exchanges:\n"
+    for exchange in exchanges:
+        exchangeIp = exchange["exchangeIp"]
+        exchangeCode = exchange["exchangeCode"]
+        firewallState = exchange["firewallState"]
+        connectionTypeCode = exchange["connectionTypeCode"]
+        exchangeId = exchange["exchangeId"]
+
+        if connectionTypeCode == "SSH":
+            connectionTypeCode = "SSH     "
+
+        myState = "close"
+        if firewallState == 1:
+            myState = "open"
+            open_count += 1
+
+        print "%s\t%s\t%s\t%s\t%s\t%s" % (exchangeIp, exchangeId, exchangeCode, connectionTypeCode, firewallState or "", myState)
+    
+    print "------------------"
+    print "Openning count: %d/%d" % (open_count, len(exchanges))
+    print "===========================\n"
+    return True, True
+
+def get_exchanges(sessionInfo, sessionId):
+    userName = sessionInfo["username"]
+
+    # get exchange
+    url = "http://10.58.65.180:8025/BusinessProcessServer/Exchange/getExchanges"
+    data = "searchRegex=&crNumber=&isFWOpen=0&isSearchExchangeExtend=0&usernameAuth=%s&passwordAuth=%s" % (userName, sessionId)
+    response = session.post(url, headers = headers, data = data)
+    if response.status_code != 200:
+        return False, "getExchanges not ok, " + str(response.status_code)
+    
+    exchanges = response.json()
+    if not exchanges:
+        return False, "Invalid exchanges"
+
+    return True, exchanges
+
+def check_ip_in_list(ip_list, ip):
+    for tmp in ip_list:
+        if tmp == ip:
+            return True
+
+        if fnmatch.fnmatch(ip, tmp):
+            return True
+
+    return False
+
+def open_firewall(sessionInfo, sessionId):
+    userName = sessionInfo["username"]
+
+    # get exchange
+    code, exchanges = get_exchanges(sessionInfo, sessionId)
+    if not code:
+        return False, "get_exchanges error, " + str(exchanges)
+
+    print_all_exchange_info(exchanges)
+
+    ip_list = sys.argv[1:]
+    open_ip_list = []
+    close_ip_list = []
+
+    for ip in ip_list:
+        if ip.startswith("!"):
+            close_ip_list.append(ip.replace("!", ""))
+        elif ip.startswith("~"):
+            close_ip_list.append(ip.replace("~", ""))
+        elif ip.startswith("@"):
+            close_ip_list.append(ip.replace("@", ""))
+            open_ip_list.append(ip.replace("@", ""))
+        else:
+            open_ip_list.append(ip)
+            
+
+    if "login" in ip_list:
+        ip_list.remove("login")
+
+    print "open_ip_list:", open_ip_list
+    print "close_ip_list:", close_ip_list
+
+    print "\n"
+
+    for exchange in exchanges:
+        if "all" in close_ip_list:
+            pass
+
+        elif not check_ip_in_list(close_ip_list, exchange["exchangeIp"]):
+            continue
+
+        code, result = open_close_one_server(userName, sessionInfo, sessionId, exchange, "close")
+        if not code:
+            return False, "open_close_one_server error, " + str(result)
+
+        print "\n"
+
+    for exchange in exchanges:
+        if "all" in open_ip_list:
+            pass
+            
+        elif not check_ip_in_list(open_ip_list, exchange["exchangeIp"]):
+            continue
+
+        code, result = open_close_one_server(userName, sessionInfo, sessionId, exchange, "open")
+        if not code:
+            return False, "open_close_one_server error, " + str(result)
+
+        print "\n"
+
+    print "Please wait for getting current firewall status...\n"
+    time.sleep(5)
+
+    # get exchange
+    code, exchanges = get_exchanges(sessionInfo, sessionId)
+    if not code:
+        return False, "get_exchanges error, " + str(exchanges)
+
+    print_all_exchange_info(exchanges)
+
+    return True, True
+
+def test_CreateFirewall():
+    client = zeep.Client('http://10.58.65.180:8087/FirewallService/FirewallServiceInterface?wsdl')
+    factory_tns = client.type_factory('ns1')
+    #x = factory_tns.gateProToken(qeqwe = 1)
+    x = factory_tns.gateProToken()
+    x["username"] = "123"
+    print dir(factory_tns.gateProToken), x.username
+    return True, True
+
+def usage():
+    print "Usage:"
+    print "  python open_gatepro.py [login] [ip list]"
+    print "    - login: force login, do not use saved token"
+    print "    - ip list: can be one of following"
+    print "        + ip address. ex: 192.168.1.1"
+    print "        + ip address wildcard. ex: 192.168.1.?, 192.168.1.*"
+    print "        + ip address with close prefix ('!' or '~'). ex: !192.168.1.1, ~192.168.1.*"
+    print "        + ip address with reopen prefix ('@'). ex: @192.168.1.1"
+    print "        + 'all' for all ip"
+    print ""
+    print "  Examples:"
+    print "    - python open_gatepro.py 1.2.3.4"
+    print "    - python open_gatepro.py !1.2.3.4"
+    print "    - python open_gatepro.py 1.2.3.*"
+    print "    - python open_gatepro.py ~1.2.3.?"
+    print "    - python open_gatepro.py @1.2.3.4"
+    print "    - python open_gatepro.py login ~1.2.3.?"
+    print "    - python open_gatepro.py all"
+    print "    - python open_gatepro.py !all"
+    print "    - python open_gatepro.py @all"
+    print ""
+    print "  Config:"
+    print "    - Can config user and password in config.py file (create your own)"
+    print """        
+        userName = "hoangnv35"
+        password = "blabla" """
+    print ""
+    print "    - Can config user and password in environment variables"
+    print "      Windows:"
+    print "        set USER_NAME=hoangnv35"
+    print "        set PASSWORD=blabla"
+    print ""
+    print "      Linux:"
+    print "        export USER_NAME=hoangnv35"
+    print "        export PASSWORD=blabla"
+    print ""
+
+def bypass_gatepro():
+    print "Current version:", __VERSION__
+
+    if len(sys.argv) == 1 or "-h" in sys.argv or "--help" in sys.argv or "/?" in sys.argv or "?" in sys.argv:
+        usage()
+        return True, False
+
+    get_user_name_and_password()
+
+    if len(sys.argv) <= 1:
+        return False, "You must specify server ip in arguments"
+
+    # get session info
+    code, sessionInfo = load_session_info()
+    if not code:
+        return False, "load_session_info error, " + str(sessionInfo)
+
+    code, result = check_session(sessionInfo)
+    if not code:
+        return False, "check_session error, " + str(result)
+
+    if not result:
+        code, sessionInfo = login()
+        if not code:
+            return False, "login error, " + str(sessionInfo)
+
+    else:
+        print "Reuse old token :))))))))))))"
+        print "username:", sessionInfo["username"] 
+    
+    sessionId = sessionInfo["sessionId"]
+    
+    code, result = open_firewall(sessionInfo, sessionId)
+    if not code:
+        return False, "open_firewall error, " + str(result)
+
+    return True, True
+
+def test_otp():
+    hihi = "OTP code on GateProv3 System: 198413. This OTP code comes into effect: Wed Sep 26 14:11:08 ICT 2018"
+    print hihi.replace("OTP code on GateProv3 System:", "").split(".")[0].strip()
+
+def test_dumps():
+    data = {
+        'OTPToken': 'c4jduo119C011Gm!nM@ngC4u1@mgjTh3',
+        'result': '0001',
+        'sessionId': u'eyJhbGciOiJIUzI1NiJ9.eyJqdGkiOiJob2FuZ',
+        'userSessionId': 2788080L,
+        'username': 'hoangnv35'
+    }
+
+    print json.dumps(data)
+
+if __name__ == "__main__":
+    print bypass_gatepro()
+    #print test_otp()
+    #print test_dumps()
