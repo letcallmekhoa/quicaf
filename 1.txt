@@ -6,3 +6,12 @@ def sdd():
   print "sdf"
   if True:
     print "23dffd4111111111111115"
+
+fghfghffghffghfdfgfddffdssdfdfsdsddsfggdfdsdsdfdfgdfgd
+
+import "abc"
+
+def sdd():
+  print "sdf"
+  if True:
+    print "23dffd4111111111111115"
