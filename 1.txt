@@ -14,7 +14,7 @@ session = requests.Session()
 session.trust_env = False
 headers = {'Content-Type': 'application/x-www-form-urlencoded','User-Agent': 'Mozilla/5.0 ( compatible )'}
 
-userName = ""
+userName = "1"
 password = ""
 
 def get_user_name_and_password():
